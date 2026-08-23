@@ -125,12 +125,12 @@ export class IngestClient {
     let resp: AxiosResponse;
     try {
       resp = await this.http.post(this.endpoint, this.withWorkspace(payload), { timeout: 10000 });
-    } catch (err: any) {
-      this.warnDelivery(`${err?.name || "Error"}: ${err?.message || err}`);
+    } catch (err) {
+      this.warnDelivery(describeTransportError(err));
       return undefined;
     }
     if (resp.status < 200 || resp.status >= 300) {
-      this.warnDelivery(`HTTP ${resp.status}`, resp.status);
+      this.warnDelivery(`HTTP ${Number(resp.status)}`, resp.status);
       return undefined;
     }
     const body = resp.data;
@@ -301,16 +301,16 @@ export class IngestClient {
       let resp: AxiosResponse;
       try {
         resp = await this.http.post(this.endpoint, payload, { timeout: 10000 });
-      } catch (err: any) {
-        lastError = `${err?.name || "Error"}: ${err?.message || err}`;
+      } catch (err) {
+        lastError = describeTransportError(err);
         continue;
       }
       if (RETRYABLE_STATUS.has(resp.status) && attempt < MAX_RETRIES - 1) {
-        lastError = `HTTP ${resp.status}`;
+        lastError = `HTTP ${Number(resp.status)}`;
         continue;
       }
       if (resp.status < 200 || resp.status >= 300) {
-        this.warnDelivery(`HTTP ${resp.status}`, resp.status);
+        this.warnDelivery(`HTTP ${Number(resp.status)}`, resp.status);
       }
       return;
     }
@@ -321,6 +321,10 @@ export class IngestClient {
    * First delivery failure logs a warning - the tracer is fire-and-forget by design, so a
    * wrong baseUrl or rejected key would otherwise fail silently forever with an empty
    * dashboard as the only symptom. `client.ping()` is the fail-fast startup check.
+   *
+   * `detail` is always one of the fixed labels from `describeTransportError` or an HTTP
+   * status: raw error text is never logged, since an error raised by the HTTP client can
+   * carry the request headers - and with them the API key.
    */
   private warnDelivery(detail: string, status?: number): void {
     if (this.deliveryWarningEmitted) {
@@ -385,4 +389,32 @@ export class IngestClient {
     }
     throw new AgentXAPIError(message, resp.status);
   }
+}
+
+/**
+ * A fixed label for a transport failure, never the error's own text.
+ *
+ * An HTTP-client error carries the failed request's config, headers included, so
+ * interpolating its message into a log risks printing the API key. Known Node/axios codes
+ * are mapped to constants of their own so the useful signal survives without the payload.
+ */
+const TRANSPORT_LABELS: Record<string, string> = {
+  ECONNREFUSED: "ECONNREFUSED",
+  ECONNRESET: "ECONNRESET",
+  ECONNABORTED: "ECONNABORTED",
+  ENOTFOUND: "ENOTFOUND",
+  ETIMEDOUT: "ETIMEDOUT",
+  EHOSTUNREACH: "EHOSTUNREACH",
+  ENETUNREACH: "ENETUNREACH",
+  EAI_AGAIN: "EAI_AGAIN",
+  EPIPE: "EPIPE",
+  EPROTO: "EPROTO",
+  CERT_HAS_EXPIRED: "CERT_HAS_EXPIRED",
+  DEPTH_ZERO_SELF_SIGNED_CERT: "DEPTH_ZERO_SELF_SIGNED_CERT",
+  UNABLE_TO_VERIFY_LEAF_SIGNATURE: "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+};
+
+function describeTransportError(err: unknown): string {
+  const code = (err as { code?: unknown } | null)?.code;
+  return (typeof code === "string" && TRANSPORT_LABELS[code]) || "network error";
 }

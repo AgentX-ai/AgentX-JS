@@ -1,3 +1,5 @@
+import { randomBytes, randomUUID } from "crypto";
+
 import { VERSION } from "./version";
 
 export const DEFAULT_API_BASE = "https://api.agentx.so/api/v1";
@@ -14,7 +16,7 @@ const EVAL_SUFFIX = "/custom-agent-evaluations";
  * so one override works for every route (same behaviour as `agentx.util.api_base`).
  */
 export function apiBase(baseUrl?: string): string {
-  let base = (baseUrl || process.env.AGENTX_API_BASE_URL || "").replace(/\/+$/, "");
+  let base = stripTrailingSlashes(baseUrl || process.env.AGENTX_API_BASE_URL || "");
   if (!base) {
     return DEFAULT_API_BASE;
   }
@@ -77,17 +79,27 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** RFC4122-ish hex id, matching the Python SDK's `uuid4().hex` span ids. */
-export function hexId(): string {
-  let out = "";
-  for (let i = 0; i < 32; i++) {
-    out += Math.floor(Math.random() * 16).toString(16);
+/**
+ * Trailing-slash trim without a regex - a `/+$` pattern backtracks on input with many
+ * repeated slashes, and this runs on a caller-supplied base URL.
+ */
+function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47 /* "/" */) {
+    end -= 1;
   }
-  return out;
+  return value.slice(0, end);
+}
+
+/**
+ * 32-char hex id, matching the Python SDK's `uuid4().hex` span ids. Crypto-backed rather
+ * than Math.random(): span and session ids end up addressing real records.
+ */
+export function hexId(): string {
+  return randomBytes(16).toString("hex");
 }
 
 /** RFC4122 v4 UUID (used for evaluation batch ids). */
 export function uuid4(): string {
-  const h = hexId();
-  return [h.slice(0, 8), h.slice(8, 12), `4${h.slice(13, 16)}`, `a${h.slice(17, 20)}`, h.slice(20, 32)].join("-");
+  return randomUUID();
 }
