@@ -29,14 +29,14 @@ export class AgentX {
   private _evaluations?: EvaluationsRunner;
 
   /**
-   * @param apiKey  API key, or an options object. Falls back to `AGENTX_API_KEY`.
-   * @param options Base URL / workspace overrides.
+   * @param apiKey  API key. Falls back to `AGENTX_API_KEY`.
+   * @param options Base URL / workspace overrides. Use `AgentX.fromEnv(options)` to pass
+   *                options while taking the key from the environment.
    */
-  constructor(apiKey?: string | AgentXOptions, options: AgentXOptions = {}) {
-    const opts: AgentXOptions = typeof apiKey === "object" && apiKey !== null ? apiKey : options;
-    const key = typeof apiKey === "string" ? apiKey : undefined;
+  constructor(apiKey?: string, options: AgentXOptions = {}) {
+    const opts: AgentXOptions = options;
 
-    this.apiKey = key || process.env.AGENTX_API_KEY || "";
+    this.apiKey = apiKey || process.env.AGENTX_API_KEY || "";
     if (!this.apiKey) {
       throw new Error(
         "API key is required. Set AGENTX_API_KEY environment variable or pass apiKey parameter."

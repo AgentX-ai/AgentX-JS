@@ -336,7 +336,7 @@ export class IngestClient {
         ? "the API key was rejected - check apiKey / AGENTX_API_KEY (for self-host, copy the 'Default project API key' from the engine's startup log)"
         : "check baseUrl / AGENTX_API_BASE_URL (for self-host it should look like http://localhost:4700/api/v1)";
     console.warn(
-      `[agentx] traces are NOT being delivered to ${this.endpoint} (${detail}) - ${hint}. ` +
+      `[agentx] traces are NOT being delivered to ${redactUrl(this.endpoint)} (${detail}) - ${hint}. ` +
         "Call client.ping() at startup to fail fast on misconfiguration. This warning is only shown once."
     );
   }
@@ -417,4 +417,22 @@ const TRANSPORT_LABELS: Record<string, string> = {
 function describeTransportError(err: unknown): string {
   const code = (err as { code?: unknown } | null)?.code;
   return (typeof code === "string" && TRANSPORT_LABELS[code]) || "network error";
+}
+
+/**
+ * The endpoint with any userinfo removed, for logging. A base URL of the
+ * `https://user:secret@host` form would otherwise put a credential in the log line.
+ */
+function redactUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.username || parsed.password) {
+      parsed.username = "";
+      parsed.password = "";
+      return `${parsed.origin}${parsed.pathname}`;
+    }
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return "the configured endpoint";
+  }
 }
