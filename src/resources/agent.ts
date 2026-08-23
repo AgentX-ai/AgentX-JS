@@ -1,5 +1,5 @@
 import axios, { AxiosResponse } from "axios";
-import { getHeaders } from "../util";
+import { apiBase, getHeaders } from "../util";
 import { Conversation } from "./conversation";
 
 export interface AgentData {
@@ -26,7 +26,7 @@ export class Agent {
   }
 
   async newConversation(): Promise<Conversation> {
-    const url = `https://api.agentx.so/api/v1/access/agents/${this.id}/conversations/new`;
+    const url = `${apiBase()}/access/agents/${this.id}/conversations/new`;
     const response: AxiosResponse = await axios.post(
       url,
       { type: "chat" },
@@ -55,7 +55,7 @@ export class Agent {
   }
 
   async listConversations(): Promise<Conversation[]> {
-    const url = `https://api.agentx.so/api/v1/access/agents/${this.id}/conversations`;
+    const url = `${apiBase()}/access/agents/${this.id}/conversations`;
     const response: AxiosResponse = await axios.get(url, {
       headers: getHeaders(),
     });

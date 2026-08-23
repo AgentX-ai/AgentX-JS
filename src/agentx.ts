@@ -1,13 +1,42 @@
 import axios, { AxiosResponse } from "axios";
-import { getHeaders } from "./util";
+
+import { apiBase, getHeaders } from "./util";
+import { VERSION } from "./version";
+import { AgentXAPIError, AgentXAuthError, AgentXConnectionError } from "./errors";
 import { Agent } from "./resources/agent";
 import { Workforce } from "./resources/workforce";
+import { IngestClient } from "./tracing/ingestClient";
+import { Tracer } from "./tracing/tracer";
+import { EvaluationsClient } from "./evaluations/client";
+import { EvaluationsRunner } from "./evaluations/runner";
+
+export interface AgentXOptions {
+  /** Overrides `AGENTX_API_BASE_URL`. For self-host, e.g. `http://localhost:4700/api/v1`. */
+  baseUrl?: string;
+  /** Scopes datasets, runs and traces to a workspace instead of the key's default one. */
+  workspaceId?: string;
+  /** Drain queued traces when the event loop empties. Default true. */
+  flushTracesOnExit?: boolean;
+}
 
 export class AgentX {
   private apiKey: string;
+  private baseUrl?: string;
+  private workspaceId?: string;
+  private options: AgentXOptions;
 
-  constructor(apiKey?: string) {
-    this.apiKey = apiKey || process.env.AGENTX_API_KEY || "";
+  private _tracer?: Tracer;
+  private _evaluations?: EvaluationsRunner;
+
+  /**
+   * @param apiKey  API key, or an options object. Falls back to `AGENTX_API_KEY`.
+   * @param options Base URL / workspace overrides.
+   */
+  constructor(apiKey?: string | AgentXOptions, options: AgentXOptions = {}) {
+    const opts: AgentXOptions = typeof apiKey === "object" && apiKey !== null ? apiKey : options;
+    const key = typeof apiKey === "string" ? apiKey : undefined;
+
+    this.apiKey = key || process.env.AGENTX_API_KEY || "";
     if (!this.apiKey) {
       throw new Error(
         "API key is required. Set AGENTX_API_KEY environment variable or pass apiKey parameter."
@@ -15,10 +44,114 @@ export class AgentX {
     } else {
       process.env.AGENTX_API_KEY = this.apiKey;
     }
+
+    this.options = opts;
+    // baseUrl overrides AGENTX_API_BASE_URL (and the SDK default) for every request made
+    // through this process, so the plain resource calls below pick it up too.
+    this.baseUrl = opts.baseUrl || process.env.AGENTX_API_BASE_URL;
+    if (this.baseUrl) {
+      process.env.AGENTX_API_BASE_URL = this.baseUrl;
+    }
+    this.workspaceId = opts.workspaceId || process.env.AGENTX_WORKSPACE_ID;
+  }
+
+  /** Create a client from `AGENTX_API_KEY` (and optionally `AGENTX_API_BASE_URL`). */
+  static fromEnv(options: AgentXOptions = {}): AgentX {
+    return new AgentX(undefined, options);
+  }
+
+  /**
+   * Trace agent runs into AgentX (Observe / Live Traces).
+   *
+   * ```ts
+   * await client.tracer.withSpan("support-agent", { input: question }, async (span) => {
+   *   span.output = await callLlm(question);
+   * });
+   * await client.tracer.flush();
+   * ```
+   */
+  get tracer(): Tracer {
+    if (!this._tracer) {
+      this._tracer = new Tracer(
+        new IngestClient({
+          apiKey: this.apiKey,
+          sdkVersion: VERSION,
+          baseUrl: this.baseUrl,
+          workspaceId: this.workspaceId,
+          flushOnExit: this.options.flushTracesOnExit,
+        })
+      );
+    }
+    return this._tracer;
+  }
+
+  /**
+   * Custom Agent Evaluations: datasets, grading configs, runs, gates and reports.
+   *
+   * ```ts
+   * const report = await client.evaluations
+   *   .run({ datasetId, subject: { displayName: "Support bot", framework: "openai" } })
+   *   .execute(myAgent)
+   *   .finalize()
+   *   .analyze();
+   * ```
+   */
+  get evaluations(): EvaluationsRunner {
+    if (!this._evaluations) {
+      this._evaluations = new EvaluationsRunner(
+        new EvaluationsClient({
+          apiKey: this.apiKey,
+          sdkVersion: VERSION,
+          baseUrl: this.baseUrl,
+          workspaceId: this.workspaceId,
+        })
+      );
+    }
+    return this._evaluations;
+  }
+
+  /**
+   * Verify the client can reach AgentX and that the API key is accepted.
+   *
+   * Construction is deliberately lazy (no network call) and trace delivery is
+   * fire-and-forget, so a wrong `baseUrl` or `apiKey` otherwise surfaces only as a one-time
+   * warning while traces silently go nowhere. Call this once at startup to fail fast.
+   */
+  async ping(): Promise<{ ok: true; baseUrl: string }> {
+    const base = apiBase(this.baseUrl);
+    // /monitor/patterns: the cheapest key-authenticated endpoint that exists on both the
+    // hosted API and the self-host engine's SDK-facing router.
+    let response: AxiosResponse;
+    try {
+      response = await axios.get(`${base}/monitor/patterns`, {
+        headers: getHeaders(this.apiKey),
+        timeout: 10000,
+        validateStatus: () => true,
+      });
+    } catch (err: any) {
+      throw new AgentXConnectionError(
+        `Cannot reach AgentX at ${base} (${err?.name || "Error"}: ${err?.message || err}). ` +
+          "Check baseUrl / AGENTX_API_BASE_URL - for self-host it should look like " +
+          "http://localhost:4700/api/v1."
+      );
+    }
+    if (response.status === 401 || response.status === 403) {
+      throw new AgentXAuthError(
+        `AgentX at ${base} rejected the API key (HTTP ${response.status}). Check apiKey / ` +
+          "AGENTX_API_KEY - for self-host, copy the 'Default project API key' from the engine's startup log."
+      );
+    }
+    if (response.status < 200 || response.status >= 300) {
+      throw new AgentXAPIError(
+        `AgentX at ${base} responded HTTP ${response.status} to the health probe.`,
+        response.status
+      );
+    }
+    return { ok: true, baseUrl: base };
   }
 
   async getAgent(id: string): Promise<Agent> {
-    const url = `https://api.agentx.so/api/v1/access/agents/${id}`;
+    const url = `${apiBase()}/access/agents/${id}`;
     const response: AxiosResponse = await axios.get(url, {
       headers: getHeaders(),
     });
@@ -38,7 +171,7 @@ export class AgentX {
   }
 
   async listAgents(): Promise<Agent[]> {
-    const url = "https://api.agentx.so/api/v1/access/agents";
+    const url = `${apiBase()}/access/agents`;
     const response: AxiosResponse = await axios.get(url, {
       headers: getHeaders(),
     });
@@ -60,7 +193,7 @@ export class AgentX {
   }
 
   async listWorkforces(): Promise<Workforce[]> {
-    const url = "https://api.agentx.so/api/v1/access/teams";
+    const url = `${apiBase()}/access/teams`;
     const response: AxiosResponse = await axios.get(url, {
       headers: getHeaders(),
     });
@@ -106,7 +239,7 @@ export class AgentX {
   }
 
   async getProfile(): Promise<any> {
-    const url = "https://api.agentx.so/api/v1/access/getProfile";
+    const url = `${apiBase()}/access/getProfile`;
     const response: AxiosResponse = await axios.get(url, {
       headers: getHeaders(),
     });

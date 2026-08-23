@@ -147,6 +147,179 @@ for await (const chunk of stream) {
 
 The workforce chat allows you to leverage multiple specialized agents working together to provide comprehensive responses to your queries.
 
+## Tracing
+
+Send agent runs to AgentX so they show up in Observe / Live Traces. Nested spans link into a
+real tree (one row per LLM call, tool call and retrieval), so a multi-step run is inspectable
+step by step.
+
+```typescript
+import { AgentX } from "@agentx-ai/agentx-js";
+
+const client = new AgentX(); // reads AGENTX_API_KEY
+
+const answer = await client.tracer.withSpan(
+  "support-agent",
+  { input: { query: question }, framework: "openai" },
+  async (span) => {
+    // Retrievals and tool calls made inside the block attach to it automatically
+    const docs = await client.tracer.traceRetrieval("kb_search", { query: question }, async (r) => {
+      r.docCount = 3;
+      return knowledgeBase.search(question);
+    });
+
+    const policy = await client.tracer.traceToolCall("policy_lookup", { input: { topic } }, async (t) => {
+      t.output = await lookupPolicy(topic);
+      return t.output;
+    });
+
+    const reply = await callLlm(question, docs, policy);
+    span.output = reply;
+    return reply;
+  }
+);
+
+await client.tracer.flush(); // traces are queued in the background - flush before exiting
+```
+
+Need the trace id back (for example to attach it to an evaluation result)? Open the span with
+`sync: true`:
+
+```typescript
+const span = client.tracer.trace("support-agent", { sync: true });
+span.output = await callLlm(question);
+const traceId = await span.end(); // the ingested trace's id
+```
+
+Other tracing entry points:
+
+- `client.tracer.wrap("name", fn)` - wrap a function so every call is traced
+- `client.tracer.useSpan(span, fn)` - attach work started in another async context to a span
+- `span.childSpan(name, { startTime, endTime, ... })` - emit a child row with your own timing
+- `span.recordLlmCall({ durationMs, model, inputTokens, outputTokens })` - one LLM-call child row
+- `client.tracer.evaluateTrace(traceId, datasetId)` - score an ingested trace, agent not re-run
+- `client.ping()` - fail fast at startup on a bad key or base URL (trace delivery is silent)
+
+## Evaluations
+
+Build a dataset, run your own agent against it, and get it scored and analysed.
+
+```typescript
+const client = new AgentX();
+
+const dataset = await client.evaluations.datasets
+  .builder("Support QA", { numberOfRequests: 3, judgeModel: "gpt-5.5" })
+  .addCase("How do I reset my password?", {
+    expectedResults: "Point the user at Settings > Security.",
+    expectedTools: ["kb_search"], // scored as a trajectory match against the linked trace
+  })
+  .addCase("What are your support hours?", { expectedResults: "9-5 on weekdays." })
+  .publish();
+
+const report = await client.evaluations
+  .run({
+    datasetId: dataset.id,
+    subject: { displayName: "Support bot", framework: "openai", runtime: "local" },
+  })
+  .execute(async (evaluationCase) => {
+    const span = client.tracer.trace("support-agent", { sync: true });
+    span.output = await myAgent(evaluationCase.query);
+    const traceId = await span.end();
+    return { output: span.output, traceId }; // links the run's result to the full trace
+  })
+  .finalize()
+  .analyze();
+
+console.log(report.averageRating, report.recommendations);
+```
+
+Your `execute` function can return a plain string, an object
+(`{ output, traceId, retrievalContext, metadata, inputTokens, outputTokens, error }`), or one of
+the bundled adapters:
+
+```typescript
+import { HttpEndpointAdapter, PrecomputedAdapter } from "@agentx-ai/agentx-js";
+
+// Call your own service for every case
+.execute(new HttpEndpointAdapter({ url: "http://localhost:8080/eval" }))
+
+// Or score answers you already have
+.execute(new PrecomputedAdapter({ "case-0": "Go to Settings > Security." }))
+```
+
+Live rating stats are available as soon as results are submitted, without waiting for
+`.analyze()`:
+
+```typescript
+const run = await client.evaluations.run({ datasetId, subject }).execute(myAgent).finalize();
+console.log(run.runId, run.averageRating, run.ratedCount);
+console.log(await run.fetchResults()); // per-result rows: rating, justification, trace ids
+```
+
+Datasets can also be loaded from CSV (`query`, `expected_results`, `expected_capabilities`,
+`expected_knowledge_base`, `expected_delegations`; list columns are semicolon-separated):
+
+```typescript
+await client.evaluations.datasets.fromCsv("./cases.csv", "Support QA").publish();
+```
+
+Reusable grading configs live on `client.evaluations.settings` and can be pointed at any
+dataset:
+
+```typescript
+const settings = await client.evaluations.settings
+  .builder("Strict grading", { evaluationCriteria: "Answers must cite a policy.", judgeModel: "gpt-5.5" })
+  .publish();
+
+await client.evaluations
+  .run({ datasetId, subject, evaluationSettingsId: settings.id })
+  .execute(myAgent)
+  .finalize();
+```
+
+## CI/CD gates
+
+Block a merge when quality drops.
+
+```typescript
+// Gate a run you just executed (or any finalized run by id)
+const gate = await client.evaluations
+  .run({ datasetId, subject })
+  .execute(myAgent)
+  .finalize()
+  .gate({ failUnder: 7, noRegression: true });
+
+if (!gate.passed) {
+  process.exit(gate.exitCode);
+}
+```
+
+For CI-enabled datasets, the whole lifecycle is one call - it creates the run, asks your agent
+each question, submits the answers for scoring and returns the gate decision:
+
+```typescript
+const result = await client.tracer.runEval(datasetId, (query) => myAgent(query), {
+  agentName: "support-bot",
+  concurrency: 4,
+  failOnGate: true, // throws CIGateFailure when the gate fails
+  gitContext: { branch: process.env.GITHUB_REF_NAME, commit_sha: process.env.GITHUB_SHA },
+});
+
+console.log(result.gate, result.passRate, result.violations);
+```
+
+## Self-hosted engines
+
+Point the SDK at a self-hosted AgentX engine with `baseUrl` (or `AGENTX_API_BASE_URL`):
+
+```typescript
+const client = new AgentX(process.env.AGENTX_API_KEY, {
+  baseUrl: "http://localhost:4700/api/v1",
+  workspaceId: "optional-workspace-id",
+});
+await client.ping(); // verifies the URL and key before anything is traced
+```
+
 ## TypeScript Support
 
 This SDK is written in TypeScript and provides full type definitions. All classes, interfaces, and methods are properly typed for better development experience.
@@ -160,13 +333,45 @@ The main client class for interacting with the AgentX API.
 #### Constructor
 
 - `new AgentX(apiKey?: string)` - Creates a new AgentX client instance
+- `new AgentX(apiKey?: string, options?: AgentXOptions)` - `{ baseUrl, workspaceId, flushTracesOnExit }`
+- `AgentX.fromEnv(options?)` - Creates a client from `AGENTX_API_KEY` / `AGENTX_API_BASE_URL`
 
 #### Methods
 
 - `getAgent(id: string): Promise<Agent>` - Get a specific agent by ID
 - `listAgents(): Promise<Agent[]>` - List all agents
 - `getProfile(): Promise<any>` - Get the current user's profile
-- `static listWorkforces(): Promise<Workforce[]>` - List all workforces
+- `listWorkforces(): Promise<Workforce[]>` - List all workforces
+- `ping(): Promise<{ ok: true; baseUrl: string }>` - Verify the base URL and API key
+
+#### Properties
+
+- `tracer: Tracer` - Tracing (see [Tracing](#tracing))
+- `evaluations: EvaluationsRunner` - Evaluations (see [Evaluations](#evaluations))
+
+### Tracer
+
+- `withSpan(name, options?, fn)` - Run `fn` inside a span, closing it automatically
+- `trace(name, options?): TraceSpan` - Open a span you close yourself with `span.end()`
+- `wrap(name, fn, options?)` - Wrap a function so every call is traced
+- `useSpan(span, fn)` - Attach work from another async context to a span
+- `traceToolCall(name, options?, fn)` / `recordToolCall(name, options?)` - Record a tool call
+- `traceRetrieval(name, options?, fn)` / `recordRetrieval(name, options?)` - Record a retrieval
+- `flush(timeoutMs?)` - Wait for queued traces to be delivered
+- `evaluateTrace(traceId, datasetId, options?)` - Score an ingested trace against a dataset
+- `runEval(datasetId, agentFn, options?)` - Full CI/CD evaluation lifecycle in one call
+- `createCiRun` / `submitResult` / `finalizeCiRun` / `getCiRun` - The CI lifecycle, step by step
+
+### EvaluationsRunner (`client.evaluations`)
+
+- `run({ datasetId, subject, evaluationSettingsId? })` - Start a run; chain `.execute(fn)`,
+  `.finalize()`, `.analyze()`, `.gate()`
+- `datasets.builder(name, config?)` / `datasets.fromCsv(path, name, config?)` /
+  `datasets.fromRows(rows, name, config?)` / `datasets.get(id)` / `datasets.list()`
+- `settings.builder(name, config?)` / `settings.get(id)` / `settings.list()`
+- `listModels(provider?)` - Model ids valid for judges and portability comparisons
+- `getRun(runId)` / `getReport(runId)` / `getAnalysisStatus(runId)` / `gateRun(runId, options?)`
+- `listGates()` / `simulateConversation(options)` - self-hosted engines
 
 ### Agent
 
@@ -233,6 +438,11 @@ The SDK throws descriptive errors for various failure scenarios:
 - API errors (with status codes)
 - Invalid data
 
+Tracing and evaluations calls throw typed errors that all extend `Error`, so existing
+`catch (error)` blocks keep working: `AgentXAuthError`, `AgentXConnectionError`,
+`AgentXAPIError` (carries `statusCode`), `AgentXValidationError`, `DatasetNotFound`,
+`CINotEnabled` and `CIGateFailure`.
+
 ```typescript
 try {
   const agent = await client.getAgent("invalid-id");
@@ -244,6 +454,9 @@ try {
 ## Environment Variables
 
 - `AGENTX_API_KEY` - Your AgentX API key (optional if passed to constructor)
+- `AGENTX_API_BASE_URL` - API base URL, e.g. `http://localhost:4700/api/v1` for a self-hosted
+  engine (optional; defaults to `https://api.agentx.so/api/v1`)
+- `AGENTX_WORKSPACE_ID` - Scope datasets, runs and traces to a workspace (optional)
 
 ## Automated Publishing
 
