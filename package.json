@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "ts-node src/index.ts",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "ts-node test-tracing-eval.ts",
     "prepublishOnly": "npm run build",
     "bump:patch": "node scripts/bump-version.js patch",
     "bump:minor": "node scripts/bump-version.js minor",
@@ -18,7 +18,12 @@
     "ai",
     "agents",
     "workforce",
-    "sdk"
+    "sdk",
+    "tracing",
+    "observability",
+    "evaluation",
+    "llm",
+    "ci"
   ],
   "author": "AgentX Team",
   "author_email": "contact@agentx.so",

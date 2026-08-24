@@ -1,5 +1,5 @@
 import axios, { AxiosResponse } from "axios";
-import { getHeaders } from "../util";
+import { apiBase, getHeaders } from "../util";
 
 export interface ChatResponse {
   text: string | null;
@@ -56,7 +56,7 @@ export class Conversation {
   }
 
   async listMessages(): Promise<Message[]> {
-    const url = `https://api.agentx.so/api/v1/access/agents/${this.agent_id}/conversations/${this.id}`;
+    const url = `${apiBase()}/access/agents/${this.agent_id}/conversations/${this.id}`;
     const response: AxiosResponse = await axios.get(url, {
       headers: getHeaders(),
     });
@@ -85,7 +85,7 @@ export class Conversation {
   }
 
   async chat(message: string, context?: number): Promise<any> {
-    const url = `https://api.agentx.so/api/v1/access/conversations/${this.id}/message`;
+    const url = `${apiBase()}/access/conversations/${this.id}/message`;
     const response: AxiosResponse = await axios.post(
       url,
       { message, context },
@@ -95,7 +95,7 @@ export class Conversation {
   }
 
   async updateContext(messages: ContextMessage[]): Promise<void> {
-    const url = `https://api.agentx.so/api/v1/access/conversations/${this.id}/update-context`;
+    const url = `${apiBase()}/access/conversations/${this.id}/update-context`;
     const response: AxiosResponse = await axios.put(
       url,
       { messages },
@@ -110,7 +110,7 @@ export class Conversation {
   }
 
   async updateUserContext(message: string): Promise<void> {
-    const url = `https://api.agentx.so/api/v1/access/conversations/${this.id}/update-user-context`;
+    const url = `${apiBase()}/access/conversations/${this.id}/update-user-context`;
     const response: AxiosResponse = await axios.put(
       url,
       { message },
@@ -128,7 +128,7 @@ export class Conversation {
     message: string,
     context?: number
   ): AsyncGenerator<ChatResponse> {
-    const url = `https://api.agentx.so/api/v1/access/conversations/${this.id}/jsonmessagesse`;
+    const url = `${apiBase()}/access/conversations/${this.id}/jsonmessagesse`;
     const response: AxiosResponse = await axios.post(
       url,
       { message, context },

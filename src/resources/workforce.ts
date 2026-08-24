@@ -1,5 +1,5 @@
 import axios, { AxiosResponse } from "axios";
-import { getHeaders } from "../util";
+import { apiBase, getHeaders } from "../util";
 import { Agent } from "./agent";
 import { Conversation, ChatResponse } from "./conversation";
 
@@ -93,7 +93,7 @@ export class Workforce {
   }
 
   async newConversation(): Promise<Conversation> {
-    const url = `https://api.agentx.so/api/v1/access/teams/${this.id}/conversations/new`;
+    const url = `${apiBase()}/access/teams/${this.id}/conversations/new`;
     const response: AxiosResponse = await axios.post(
       url,
       { type: "chat" },
@@ -112,7 +112,7 @@ export class Workforce {
   }
 
   async listConversations(): Promise<Conversation[]> {
-    const url = `https://api.agentx.so/api/v1/access/teams/${this.id}/conversations`;
+    const url = `${apiBase()}/access/teams/${this.id}/conversations`;
     const response: AxiosResponse = await axios.get(url, {
       headers: getHeaders(),
     });
@@ -136,7 +136,7 @@ export class Workforce {
     message: string,
     context: number = -1
   ): AsyncGenerator<ChatResponse> {
-    const url = `https://api.agentx.so/api/v1/access/teams/conversations/${conversationId}/jsonmessagesse`;
+    const url = `${apiBase()}/access/teams/conversations/${conversationId}/jsonmessagesse`;
     const response: AxiosResponse = await axios.post(
       url,
       { message, context },

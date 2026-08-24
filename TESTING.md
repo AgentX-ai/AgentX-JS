@@ -49,3 +49,19 @@ If the streaming is working correctly, you should see output like:
   CoT: null
   Bot ID: 6862e8d0414914e72f4f77c2
 ```
+
+## Tracing + Evaluations (no credentials needed)
+
+`npm test` runs `test-tracing-eval.ts`, which starts a stub AgentX API on localhost and asserts
+the exact payloads the tracing and evaluations clients send - span trees, tool calls,
+retrievals, result batches, the analyze poll loop and the CI gate.
+
+```bash
+npm test
+```
+
+To run the same surfaces against a real engine, point the SDK at it and use your own key:
+
+```bash
+AGENTX_API_KEY=... AGENTX_API_BASE_URL=http://localhost:4700/api/v1 npx ts-node examples/tracing.ts
+```
